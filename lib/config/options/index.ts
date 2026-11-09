@@ -3796,6 +3796,7 @@ const options: Readonly<RenovateOptions>[] = [
       'bazelModDeps',
       'goGenerate',
       'gradleWrapper',
+      'maven',
       'mise',
       'pixi',
     ],
