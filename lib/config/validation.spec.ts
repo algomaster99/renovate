@@ -4293,7 +4293,7 @@ describe('config/validation', () => {
         expect(errors).toMatchObject([
           {
             message:
-              'Invalid allowedUnsafeExecutions: allowedUnsafeExecutions had invalid values `["some","value"]` which are not part of the allowedValues: ["bazelModDeps","goGenerate","gradleWrapper","mise","pixi"]',
+              'Invalid allowedUnsafeExecutions: allowedUnsafeExecutions had invalid values `["some","value"]` which are not part of the allowedValues: ["bazelModDeps","goGenerate","gradleWrapper","maven","mise","pixi"]',
           },
           {
             message:
@@ -4305,7 +4305,7 @@ describe('config/validation', () => {
           },
           {
             message:
-              'Invalid repositories[0].allowedUnsafeExecutions: allowedUnsafeExecutions had invalid values `["some","value"]` which are not part of the allowedValues: ["bazelModDeps","goGenerate","gradleWrapper","mise","pixi"]',
+              'Invalid repositories[0].allowedUnsafeExecutions: allowedUnsafeExecutions had invalid values `["some","value"]` which are not part of the allowedValues: ["bazelModDeps","goGenerate","gradleWrapper","maven","mise","pixi"]',
           },
         ]);
       });

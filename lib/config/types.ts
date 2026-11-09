@@ -589,7 +589,7 @@ export type MergeStrategy =
 
 // This list should be added to as any new unsafe execution commands should be permitted
 export type AllowedUnsafeExecution =
-  'bazelModDeps' | 'goGenerate' | 'gradleWrapper' | 'mise' | 'pixi';
+  'bazelModDeps' | 'goGenerate' | 'gradleWrapper' | 'maven' | 'mise' | 'pixi';
 
 // TODO: Proper typings
 export interface PackageRule

@@ -183,6 +183,7 @@ Allowed options:
 | `bazelModDeps`  | Allows the `bazel mod deps` when perfoming bazelisk or bazel-module updates.                  |
 | `goGenerate`    | Allows the `goGenerate` `postUpdateOption` to run after a go mod update.                      |
 | `gradleWrapper` | Allows using `./gradlew` or `gradle.bat` when performing updates with Gradle.                 |
+| `maven`         | Allows running `mvn` to regenerate maven-lockfile `lockfile.json` files.                      |
 | `mise`          | Allows running any `mise` commands, for instance `mise lock` when updating `mise.lock` files. |
 | `pixi`          | Allows running `pixi lock` when updating `pixi.lock` files (`pixi` and `pep621` managers).    |
 
