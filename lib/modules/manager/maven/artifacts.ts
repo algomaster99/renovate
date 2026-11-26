@@ -20,7 +20,12 @@ import type {
   Upgrade,
 } from '../types.ts';
 import { resolveToolConstraint } from '../util.ts';
-import type { MavenLockfileMetadata } from './types.ts';
+import { extractPackage } from './extract.ts';
+import type {
+  MavenInterimPackageFile,
+  MavenLockfileMetadata,
+  MavenProp,
+} from './types.ts';
 
 /**
  * Lock files written by https://github.com/chains-project/maven-lockfile.
@@ -106,18 +111,85 @@ function isLockFileUnder(root: string, fileName: string): boolean {
   return root === '.' || fileName.startsWith(`${root}/`);
 }
 
+function resolvePlaceholders(
+  value: string,
+  props: Record<string, MavenProp>,
+): string {
+  let result = value;
+  // Bounded, so a property that refers to itself cannot loop forever.
+  for (let i = 0; i < 10 && result.includes('${'); i++) {
+    result = result.replace(
+      regEx(/\${(?<key>[^}]*)}/g),
+      (match, key: string) => props[key.trim()]?.val ?? match,
+    );
+  }
+  return result;
+}
+
 /**
- * The lock file pins the plugin version that wrote it. If this update bumps
- * maven-lockfile itself, the new version must write the lock file instead.
+ * The maven-lockfile version the root POM declares, under `build/plugins` or
+ * `build/pluginManagement`. Declarations are looked up through the parents in
+ * the repository, nearest first, the way Maven inherits them. `${...}`
+ * placeholders are resolved against properties from the same parents.
+ */
+export async function getPomPluginVersion(
+  rootPom: string,
+  fileList: string[],
+  readPom: (file: string) => Promise<string | null>,
+): Promise<string | undefined> {
+  const files = new Set(fileList);
+  const chain: MavenInterimPackageFile[] = [];
+  let file: string | undefined = rootPom;
+  while (file && !chain.some((pkg) => pkg.packageFile === file)) {
+    const content = await readPom(file);
+    const pkg: MavenInterimPackageFile | null = content
+      ? extractPackage(content, file, {})
+      : null;
+    if (!pkg) {
+      break;
+    }
+    chain.push(pkg);
+    file = pkg.parent && files.has(pkg.parent) ? pkg.parent : undefined;
+  }
+
+  // Nearer POMs override their parents' properties.
+  const props: Record<string, MavenProp> = Object.assign(
+    {},
+    ...chain.map((pkg) => pkg.mavenProps).reverse(),
+  );
+  for (const pkg of chain) {
+    const declared = pkg.deps.find(
+      (dep) => dep.depName === MAVEN_LOCKFILE_PLUGIN && dep.depType === 'build',
+    );
+    if (declared?.currentValue) {
+      const version = resolvePlaceholders(declared.currentValue, props);
+      if (version.includes('${')) {
+        logger.debug(
+          { packageFile: pkg.packageFile, version },
+          'Cannot resolve the maven-lockfile version declared in the POM',
+        );
+        return undefined;
+      }
+      return version;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Picks the plugin version that regenerates the lock files, in this order:
+ * the version this update bumps maven-lockfile to, the version the POM
+ * declares, then the version recorded in the lock file.
  */
 export function getPluginVersion(
   updatedDeps: Upgrade[],
+  pomVersion: string | undefined,
   recordedVersion: string | undefined,
 ): string | undefined {
   const bump = updatedDeps.find(
     (dep) => (dep.packageName ?? dep.depName) === MAVEN_LOCKFILE_PLUGIN,
   );
-  return bump?.newVersion ?? bump?.newValue ?? recordedVersion;
+  return bump?.newVersion ?? bump?.newValue ?? pomVersion ?? recordedVersion;
 }
 
 export async function updateArtifacts({
@@ -166,13 +238,27 @@ export async function updateArtifacts({
     ];
   }
 
-  const version = getPluginVersion(updatedDeps, lockFile.mavenLockfileVersion);
+  const pomVersion = await getPomPluginVersion(rootPom, fileList, (file) =>
+    file === packageFileName
+      ? Promise.resolve(newPackageFileContent)
+      : readLocalFile(file, 'utf8'),
+  );
+  const version = getPluginVersion(
+    updatedDeps,
+    pomVersion,
+    lockFile.mavenLockfileVersion,
+  );
   if (!version) {
-    logger.warn(
-      { lockFile: rootLockFile },
-      'maven-lockfile lock file does not record mavenLockfileVersion - skipping update',
-    );
-    return null;
+    // Guessing a version would rewrite the lock file with a plugin the
+    // project never chose, so report it on the PR instead.
+    return [
+      {
+        artifactError: {
+          fileName: rootLockFile,
+          stderr: `Cannot tell which maven-lockfile version to run: ${rootPom} does not declare ${MAVEN_LOCKFILE_PLUGIN} with a version, and ${rootLockFile} does not record mavenLockfileVersion`,
+        },
+      },
+    ];
   }
   if (!safeVersionRegex.test(version)) {
     logger.warn(

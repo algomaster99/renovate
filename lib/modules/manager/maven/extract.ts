@@ -21,7 +21,7 @@ import type {
   PackageDependency,
   PackageFile,
 } from '../types.ts';
-import type { MavenProp } from './types.ts';
+import type { MavenInterimPackageFile, MavenProp } from './types.ts';
 
 const supportedNamespaces = [
   'http://maven.apache.org/SETTINGS/1.0.0',
@@ -378,11 +378,6 @@ function resolveParentFile(packageFile: string, parentPath: string): string {
   }
   const dir = upath.dirname(packageFile);
   return upath.normalize(upath.join(dir, parentDir, parentFile));
-}
-
-interface MavenInterimPackageFile extends PackageFile {
-  mavenProps?: Record<string, any>;
-  parent?: string;
 }
 
 export function extractPackage(

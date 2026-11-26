@@ -1,6 +1,6 @@
 import upath from 'upath';
 import { envMock, mockExecAll } from '~test/exec-util.ts';
-import { env, fs, git, logger, partial, scm } from '~test/util.ts';
+import { env, fs, git, partial, scm } from '~test/util.ts';
 import { GlobalConfig } from '../../../config/global.ts';
 import type {
   InternalGlobalConfigOptions,
@@ -13,6 +13,7 @@ import type { UpdateArtifact } from '../types.ts';
 import {
   findReactorRoot,
   getPluginVersion,
+  getPomPluginVersion,
   parseMavenLockfile,
 } from './artifacts.ts';
 import { updateArtifacts } from './index.ts';
@@ -37,6 +38,15 @@ function lockfile(
       config,
     },
   });
+}
+
+function pom(build = '', head = ''): string {
+  return `<project xmlns="http://maven.apache.org/POM/4.0.0">${head}<build>${build}</build></project>`;
+}
+
+function lockfilePlugin(version?: string): string {
+  const versionTag = version ? `<version>${version}</version>` : '';
+  return `<plugins><plugin><groupId>io.github.chains-project</groupId><artifactId>maven-lockfile</artifactId>${versionTag}</plugin></plugins>`;
 }
 
 function generateCmd(version: string): string {
@@ -132,22 +142,135 @@ describe('modules/manager/maven/artifacts', () => {
   });
 
   describe('getPluginVersion', () => {
-    it('uses the recorded version', () => {
-      expect(getPluginVersion([{ depName: 'a:b' }], '5.18.8')).toBe('5.18.8');
+    const bump = {
+      depName: 'io.github.chains-project:maven-lockfile',
+      newValue: '5.19.0',
+    };
+
+    it('uses the recorded version when the POM declares none', () => {
+      expect(getPluginVersion([{ depName: 'a:b' }], undefined, '5.18.8')).toBe(
+        '5.18.8',
+      );
+    });
+
+    it('prefers the POM version over the recorded one', () => {
+      expect(getPluginVersion([{ depName: 'a:b' }], '5.20.0', '5.18.8')).toBe(
+        '5.20.0',
+      );
     });
 
     it('prefers the version this update bumps maven-lockfile to', () => {
-      expect(
-        getPluginVersion(
-          [
-            {
-              depName: 'io.github.chains-project:maven-lockfile',
-              newValue: '5.19.0',
-            },
-          ],
-          '5.18.8',
+      expect(getPluginVersion([bump], '5.18.8', '5.18.8')).toBe('5.19.0');
+    });
+
+    it('returns undefined without any version', () => {
+      expect(getPluginVersion([], undefined, undefined)).toBeUndefined();
+    });
+  });
+
+  describe('getPomPluginVersion', () => {
+    function reader(poms: Record<string, string>) {
+      return (file: string) => Promise.resolve(poms[file] ?? null);
+    }
+
+    it('reads the version from build plugins', async () => {
+      await expect(
+        getPomPluginVersion(
+          'pom.xml',
+          ['pom.xml'],
+          reader({ 'pom.xml': pom(lockfilePlugin('5.18.8')) }),
         ),
-      ).toBe('5.19.0');
+      ).resolves.toBe('5.18.8');
+    });
+
+    it('reads the version from pluginManagement', async () => {
+      await expect(
+        getPomPluginVersion(
+          'pom.xml',
+          ['pom.xml'],
+          reader({
+            'pom.xml': pom(
+              `<pluginManagement>${lockfilePlugin('5.18.8')}</pluginManagement>${lockfilePlugin()}`,
+            ),
+          }),
+        ),
+      ).resolves.toBe('5.18.8');
+    });
+
+    it('resolves a property inherited from a parent in the repository', async () => {
+      await expect(
+        getPomPluginVersion(
+          'pom.xml',
+          ['pom.xml', 'parent/pom.xml'],
+          reader({
+            'pom.xml': pom(
+              lockfilePlugin('${lockfile.version}'),
+              '<parent><relativePath>parent/pom.xml</relativePath></parent>',
+            ),
+            'parent/pom.xml': pom(
+              '',
+              '<properties><lockfile.version>5.19.0</lockfile.version></properties>',
+            ),
+          }),
+        ),
+      ).resolves.toBe('5.19.0');
+    });
+
+    it('prefers the nearest declaration over the parent one', async () => {
+      await expect(
+        getPomPluginVersion(
+          'pom.xml',
+          ['pom.xml', 'parent/pom.xml'],
+          reader({
+            'pom.xml': pom(
+              lockfilePlugin('5.20.0'),
+              '<parent><relativePath>parent/pom.xml</relativePath></parent>',
+            ),
+            'parent/pom.xml': pom(lockfilePlugin('5.18.8')),
+          }),
+        ),
+      ).resolves.toBe('5.20.0');
+    });
+
+    it('falls back to a declaration in the parent', async () => {
+      await expect(
+        getPomPluginVersion(
+          'pom.xml',
+          ['pom.xml', 'parent/pom.xml'],
+          reader({
+            'pom.xml': pom(
+              '',
+              '<parent><relativePath>parent/pom.xml</relativePath></parent>',
+            ),
+            'parent/pom.xml': pom(lockfilePlugin('5.18.8')),
+          }),
+        ),
+      ).resolves.toBe('5.18.8');
+    });
+
+    it('does not follow a parent outside the repository', async () => {
+      const readPom = vi.fn(reader({ 'pom.xml': pom('', '<parent/>') }));
+
+      await expect(
+        getPomPluginVersion('pom.xml', ['pom.xml'], readPom),
+      ).resolves.toBeUndefined();
+      expect(readPom).toHaveBeenCalledExactlyOnceWith('pom.xml');
+    });
+
+    it('returns undefined for a placeholder it cannot resolve', async () => {
+      await expect(
+        getPomPluginVersion(
+          'pom.xml',
+          ['pom.xml'],
+          reader({ 'pom.xml': pom(lockfilePlugin('${project.version}')) }),
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it('returns undefined for a POM it cannot parse', async () => {
+      await expect(
+        getPomPluginVersion('pom.xml', ['pom.xml'], reader({})),
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -275,16 +398,44 @@ describe('modules/manager/maven/artifacts', () => {
       expect(execSnapshots).toEqual([]);
     });
 
-    it('skips lock files that do not record the plugin version', async () => {
+    it('uses the version the POM declares over the recorded one', async () => {
+      const execSnapshots = mockExecAll();
+
+      await updateArtifacts(
+        input({ newPackageFileContent: pom(lockfilePlugin('5.20.0')) }),
+      );
+
+      expect(execSnapshots).toMatchObject([{ cmd: generateCmd('5.20.0') }]);
+    });
+
+    it('reads the root POM when a module pom changes', async () => {
+      scm.getFileList.mockResolvedValue([
+        'pom.xml',
+        'lockfile.json',
+        'core/pom.xml',
+        'core/lockfile.json',
+      ]);
+      lockFiles['pom.xml'] = pom(lockfilePlugin('5.20.0'));
+      const execSnapshots = mockExecAll();
+
+      await updateArtifacts(input({ packageFileName: 'core/pom.xml' }));
+
+      expect(execSnapshots).toMatchObject([{ cmd: generateCmd('5.20.0') }]);
+    });
+
+    it('reports an artifact error when no version is known', async () => {
       lockFiles['lockfile.json'] = lockfile({});
       const execSnapshots = mockExecAll();
 
-      await expect(updateArtifacts(input())).resolves.toBeNull();
+      await expect(updateArtifacts(input())).resolves.toEqual([
+        {
+          artifactError: {
+            fileName: 'lockfile.json',
+            stderr: expect.stringContaining('mavenLockfileVersion'),
+          },
+        },
+      ]);
       expect(execSnapshots).toEqual([]);
-      expect(logger.logger.warn).toHaveBeenCalledWith(
-        { lockFile: 'lockfile.json' },
-        expect.stringContaining('mavenLockfileVersion'),
-      );
     });
 
     it('rejects a version that could change the command', async () => {
